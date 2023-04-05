@@ -46,7 +46,7 @@ impl Memory {
     /// ```
     /// Only specify a custom value for `custom_buffer_size` if you're planning on reading a slice
     /// of bytes or similar.
-    pub fn read<T: Copy + Default>(
+    pub fn read<T: Clone + Default>(
         handle: HANDLE,
         address: i64,
         custom_buffer_size: Option<usize>,
@@ -78,7 +78,7 @@ impl Memory {
     /// Memory::write::<i32>(handle, address, 100, None);
     /// ```
     /// Only specify a custom value for `custom_buffer_size` if you're writing an array of bytes.
-    pub fn write<T: Copy + Default>(
+    pub fn write<T: Clone + Default>(
         handle: HANDLE,
         address: i64,
         data: T,
