@@ -96,6 +96,25 @@ impl Memory {
         }
     }
 
+    pub fn write_bytes(
+        handle: HANDLE,
+        address: i64,
+        data: &Vec<u8>,
+        custom_buffer_size: Option<usize>,
+    ) {
+        let custom_buffer_size = custom_buffer_size.unwrap_or(data.len());
+
+        unsafe {
+            WriteProcessMemory(
+                handle,
+                address as _,
+                data.as_ptr() as _,
+                custom_buffer_size,
+                null_mut(),
+            );
+        }
+    }
+
     /// Searches for an AoB address in the process's memory, then return all the addresses (if
     /// any).
     /// # Example
