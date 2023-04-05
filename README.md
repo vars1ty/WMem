@@ -1,2 +1,2 @@
 # WMem
-Windows Memory Manipulation library
+A basic Windows Memory Manipulation library, aimed at cheat trainers
