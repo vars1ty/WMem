@@ -70,9 +70,9 @@ impl Memory {
     /// # Example
     /// ```rust
     /// // Write "Johnny Smith" to the specified address.
-    /// let new_name = b"Johnny Smith";
+    /// let new_name = "Johnny Smith".to_owned();
     /// // + 1 to get a null-byte at the end of the slice when writing it.
-    /// Memory::write::<[u8; 12]>(&handle, &address, &*new_name, Some(new_name.len() + 1));
+    /// Memory::write::<String>(&handle, &address, &new_name, Some(new_name.len() + 1));
     ///
     /// // Write 100 to the specified address.
     /// Memory::write::<i32>(&handle, &address, &100, None);
