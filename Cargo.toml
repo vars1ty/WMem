@@ -1,0 +1,23 @@
+[package]
+name = "wmem"
+description = "Windows Memory Manipulation library"
+authors = [ "varsity <william_hoden95@tutanota.com>" ]
+version = "0.1.0"
+edition = "2021"
+readme = "README.md"
+license = "GPLv3"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+dllmain-rs = { git = "https://github.com/zeon256/dllmain-rs" }
+winapi = { version = "*", features = ["minwindef", "consoleapi", "handleapi", "processthreadsapi", "winuser", "heapapi", "sysinfoapi", "memoryapi", "tlhelp32"]}
+memmem = "0.1.1"
+
+[profile.release]
+codegen-units = 1
+panic = "abort"
+opt-level = "z"
+strip = true
+lto = "fat"
