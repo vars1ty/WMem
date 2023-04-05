@@ -15,6 +15,7 @@ path = "src/lib.rs"
 
 [dependencies]
 winapi = { version = "0.3.9", features = ["minwindef", "consoleapi", "handleapi", "processthreadsapi", "memoryapi", "tlhelp32"]}
+generic-cast = "0.1.0"
 memmem = "0.1.1"
 
 [profile.release]

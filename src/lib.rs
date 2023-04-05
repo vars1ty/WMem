@@ -1,7 +1,7 @@
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
 use memmem::{Searcher, TwoWaySearcher};
-use std::{mem::*, ptr::null_mut};
+use std::{any::TypeId, mem::*, ptr::null_mut};
 use winapi::um::{
     handleapi::*,
     memoryapi::*,
@@ -78,18 +78,25 @@ impl Memory {
     /// Memory::write::<i32>(handle, address, 100, None);
     /// ```
     /// Only specify a custom value for `custom_buffer_size` if you're writing an array of bytes.
-    pub fn write<T: Clone + Default>(
+    pub fn write<T: Clone + Default + 'static>(
         handle: HANDLE,
         address: i64,
         data: T,
         custom_buffer_size: Option<usize>,
     ) {
         let custom_buffer_size = custom_buffer_size.unwrap_or(size_of::<T>());
+        let is_array_of_bytes = generic_cast::equals::<T, Vec<u8>>();
         unsafe {
             WriteProcessMemory(
                 handle,
                 address as _,
-                &data as *const _ as _,
+                if is_array_of_bytes {
+                    generic_cast::cast_ref::<T, Vec<u8>>(&data)
+                        .unwrap()
+                        .as_ptr() as _
+                } else {
+                    &data as *const _ as _
+                },
                 custom_buffer_size,
                 null_mut(),
             );
