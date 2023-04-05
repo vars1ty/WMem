@@ -7,7 +7,7 @@ keywords = [ "memory", "winapi", "game-cheat", "trainer", "cheat-trainer" ]
 repository = "https://github.com/vars1ty/WMem"
 version = "0.1.0"
 edition = "2021"
-license-file = "LICENSE.md"
+license-file = "LICENSE"
 readme = "README.md"
 license = "GPLv3"
 
