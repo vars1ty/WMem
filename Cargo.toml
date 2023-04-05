@@ -2,8 +2,12 @@
 name = "wmem"
 description = "Windows Memory Manipulation library"
 authors = [ "varsity <william_hoden95@tutanota.com>" ]
+categories = [ "development-tools", "os::windows-apis" ]
+keywords = [ "memory", "winapi", "game-cheat", "trainer", "cheat-trainer" ]
+repository = "https://github.com/vars1ty/WMem"
 version = "0.1.0"
 edition = "2021"
+license-file = "LICENSE.md"
 readme = "README.md"
 license = "GPLv3"
 
