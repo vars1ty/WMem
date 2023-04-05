@@ -1,7 +1,7 @@
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
 use memmem::{Searcher, TwoWaySearcher};
-use std::{any::TypeId, mem::*, ptr::null_mut};
+use std::{mem::*, ptr::null_mut};
 use winapi::um::{
     handleapi::*,
     memoryapi::*,
@@ -39,24 +39,24 @@ impl Memory {
     /// // If you're just reading a value like `i32` or similar, grab the first entry and continue.
     ///
     /// // Read the name of the entity with 32 characters being set as the max capacity.
-    /// let name = String::from_utf8(Memory::read::<u8>(handle, address, Some(32))).unwrap();
+    /// let name = String::from_utf8(Memory::read::<u8>(&handle, &address, Some(32))).unwrap();
     ///
     /// // Read the health of the entity.
-    /// let health = Memory::read::<i32>(handle, address, None)[0];
+    /// let health = Memory::read::<i32>(&handle, &address, None)[0];
     /// ```
     /// Only specify a custom value for `custom_buffer_size` if you're planning on reading a slice
     /// of bytes or similar.
     pub fn read<T: Clone + Default>(
-        handle: HANDLE,
-        address: i64,
+        handle: &HANDLE,
+        address: &i64,
         custom_buffer_size: Option<usize>,
     ) -> Vec<T> {
         let custom_buffer_size = custom_buffer_size.unwrap_or(size_of::<T>());
         let mut result = Vec::with_capacity(custom_buffer_size);
         unsafe {
             ReadProcessMemory(
-                handle,
-                address as _,
+                *handle,
+                *address as _,
                 result.as_mut_ptr() as _,
                 custom_buffer_size,
                 null_mut(),
@@ -72,50 +72,36 @@ impl Memory {
     /// // Write "Johnny Smith" to the specified address.
     /// let new_name = b"Johnny Smith";
     /// // + 1 to get a null-byte at the end of the slice when writing it.
-    /// Memory::write::<[u8; 12]>(handle, address, *new_name, Some(new_name.len() + 1));
+    /// Memory::write::<[u8; 12]>(&handle, &address, &*new_name, Some(new_name.len() + 1));
     ///
     /// // Write 100 to the specified address.
-    /// Memory::write::<i32>(handle, address, 100, None);
+    /// Memory::write::<i32>(&handle, &address, &100, None);
     /// ```
     /// Only specify a custom value for `custom_buffer_size` if you're writing an array of bytes.
     pub fn write<T: Clone + Default + 'static>(
-        handle: HANDLE,
-        address: i64,
-        data: T,
+        handle: &HANDLE,
+        address: &i64,
+        data: &T,
         custom_buffer_size: Option<usize>,
     ) {
         let custom_buffer_size = custom_buffer_size.unwrap_or(size_of::<T>());
+
+        // Check if it's a vector of UTF-8 bytes.
         let is_array_of_bytes = generic_cast::equals::<T, Vec<u8>>();
-        unsafe {
-            WriteProcessMemory(
-                handle,
-                address as _,
-                if is_array_of_bytes {
-                    generic_cast::cast_ref::<T, Vec<u8>>(&data)
-                        .unwrap()
-                        .as_ptr() as _
-                } else {
-                    &data as *const _ as _
-                },
-                custom_buffer_size,
-                null_mut(),
-            );
-        }
-    }
 
-    pub fn write_bytes(
-        handle: HANDLE,
-        address: i64,
-        data: &Vec<u8>,
-        custom_buffer_size: Option<usize>,
-    ) {
-        let custom_buffer_size = custom_buffer_size.unwrap_or(data.len());
+        let buffer = if is_array_of_bytes {
+            // Array of Bytes found, cast to Vec<u8> and then into a pointer, otherwise writing
+            // will fail.
+            generic_cast::cast_ref::<T, Vec<u8>>(data).unwrap().as_ptr() as _
+        } else {
+            data as *const _ as _
+        };
 
         unsafe {
             WriteProcessMemory(
-                handle,
-                address as _,
-                data.as_ptr() as _,
+                *handle,
+                *address as _,
+                buffer,
                 custom_buffer_size,
                 null_mut(),
             );
@@ -126,11 +112,11 @@ impl Memory {
     /// any).
     /// # Example
     /// ```rust
-    /// let name = Memory::aob_scan(handle, b"John Smith").expect("Found no results matching your
+    /// let name = Memory::aob_scan(&handle, b"John Smith").expect("Found no results matching your
     /// query!");
     /// println!("Found {} matches!", name.len());
     /// ```
-    pub fn aob_scan(handle: HANDLE, aob: &[u8]) -> Option<Vec<*mut i64>> {
+    pub fn aob_scan(handle: &HANDLE, aob: &[u8]) -> Option<Vec<*mut i64>> {
         let mut address = null_mut();
         let mut info: MEMORY_BASIC_INFORMATION = unsafe { zeroed() };
         let mut bytes_read = 0;
@@ -140,7 +126,7 @@ impl Memory {
         loop {
             let result = unsafe {
                 VirtualQueryEx(
-                    handle,
+                    *handle,
                     address,
                     &mut info,
                     size_of::<MEMORY_BASIC_INFORMATION>(),
@@ -158,7 +144,7 @@ impl Memory {
                 let mut buffer = Vec::with_capacity(info.RegionSize);
                 let result = unsafe {
                     ReadProcessMemory(
-                        handle,
+                        *handle,
                         info.BaseAddress,
                         buffer.as_mut_ptr() as _,
                         info.RegionSize,
