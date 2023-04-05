@@ -92,10 +92,10 @@ impl Memory {
             // Array of Bytes found, cast to Vec<u8> and then into a pointer, otherwise writing
             // will fail.
             generic_cast::cast_ref::<T, Vec<u8>>(data).unwrap().as_ptr() as _
-        } else if generic_cast::equals::<T, &str>() {
+        } else if generic_cast::equals::<T, String>() {
             // String found, turn it into bytes and then into a Vec<u8> before returning the
             // pointer.
-            let string = generic_cast::cast_ref::<T, &str>(data).unwrap();
+            let string = generic_cast::cast_ref::<T, String>(data).unwrap();
             string.as_bytes().to_vec().as_ptr() as _
         } else {
             data as *const _ as _
