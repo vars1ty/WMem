@@ -86,13 +86,17 @@ impl Memory {
     ) {
         let custom_buffer_size = custom_buffer_size.unwrap_or(size_of::<T>());
 
-        // Check if it's a vector of UTF-8 bytes.
-        let is_array_of_bytes = generic_cast::equals::<T, Vec<u8>>();
-
-        let buffer = if is_array_of_bytes {
+        // Based on the type, execute special behavior to make it easier for the user to interact
+        // with the memory.
+        let buffer = if generic_cast::equals::<T, Vec<u8>>() {
             // Array of Bytes found, cast to Vec<u8> and then into a pointer, otherwise writing
             // will fail.
             generic_cast::cast_ref::<T, Vec<u8>>(data).unwrap().as_ptr() as _
+        } else if generic_cast::equals::<T, &str>() {
+            // String found, turn it into bytes and then into a Vec<u8> before returning the
+            // pointer.
+            let string = generic_cast::cast_ref::<T, &str>(data).unwrap();
+            string.as_bytes().to_vec().as_ptr() as _
         } else {
             data as *const _ as _
         };
