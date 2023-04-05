@@ -108,6 +108,12 @@ impl Memory {
         }
     }
 
+    /// Fills the `address` with *x*-amount null-bytes (`\0`), overriding old content.
+    /// The amount is specified through `length`.
+    pub fn nullify(handle: &HANDLE, address: &i64, length: usize) {
+        Self::write::<[u8; 1]>(handle, address, b"\0", Some(length))
+    }
+
     /// Searches for an AoB address in the process's memory, then return all the addresses (if
     /// any).
     /// # Example
