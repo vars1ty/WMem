@@ -78,7 +78,7 @@ impl Memory {
     /// Memory::write::<i32>(&handle, &address, &100, None);
     /// ```
     /// Only specify a custom value for `custom_buffer_size` if you're writing an array of bytes.
-    pub fn write<T: Copy + Default + 'static>(
+    pub fn write<T: Clone + Default + 'static>(
         handle: &HANDLE,
         address: &i64,
         data: &T,
