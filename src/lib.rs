@@ -52,7 +52,7 @@ impl Memory {
         custom_buffer_size: Option<usize>,
     ) -> Vec<T> {
         let custom_buffer_size = custom_buffer_size.unwrap_or(size_of::<T>());
-        let mut result = vec![Default::default(); custom_buffer_size];
+        let mut result = vec![T::default(); custom_buffer_size];
         unsafe {
             ReadProcessMemory(
                 *handle,
