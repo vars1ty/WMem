@@ -278,7 +278,7 @@ impl Memory {
     /// Converts all `i8` values into `u8` and returns it as a `Vec<u8>`, making it valid for
     /// String conversions.
     /// This also removes all null-bytes (`\0`) before returning the result.
-    fn convert_module_name(sz_module: [i8; 256]) -> Vec<u8> {
+    pub fn convert_module_name(sz_module: [i8; 256]) -> Vec<u8> {
         let mut result = sz_module.map(|entry| entry as u8).to_vec();
         result.retain(|&entry| entry != 0); // Keep all bytes that aren't 0.
         result
