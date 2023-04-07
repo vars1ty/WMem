@@ -48,7 +48,7 @@ impl Memory {
     /// of bytes or similar.
     pub fn read<T: Clone + Default>(
         handle: &HANDLE,
-        address: &i64,
+        address: &*mut i64,
         custom_buffer_size: Option<usize>,
     ) -> Vec<T> {
         let custom_buffer_size = custom_buffer_size.unwrap_or(size_of::<T>());
@@ -80,7 +80,7 @@ impl Memory {
     /// Only specify a custom value for `custom_buffer_size` if you're writing an array of bytes.
     pub fn write<T: Clone + Default + 'static>(
         handle: &HANDLE,
-        address: &i64,
+        address: &*mut i64,
         data: &T,
         custom_buffer_size: Option<usize>,
     ) {
@@ -114,7 +114,7 @@ impl Memory {
 
     /// Fills the `address` with *x*-amount null-bytes (`\0`), overriding old content.
     /// The amount is specified through `length`.
-    pub fn nullify(handle: &HANDLE, address: &i64, length: usize) {
+    pub fn nullify(handle: &HANDLE, address: &*mut i64, length: usize) {
         Self::write::<[u8; 1]>(handle, address, b"\0", Some(length))
     }
 
