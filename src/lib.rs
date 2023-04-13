@@ -127,53 +127,62 @@ impl Memory {
     /// println!("Found {} matches!", name.len());
     /// ```
     pub fn aob_scan(handle: &HANDLE, aob: &[u8]) -> Option<Vec<*mut i64>> {
+        let mut addresses = Vec::new();
+        let searcher = TwoWaySearcher::new(aob);
+
         let mut address = null_mut();
         let mut info: MEMORY_BASIC_INFORMATION = unsafe { zeroed() };
         let mut bytes_read = 0;
-        let mut addresses = vec![];
-        let searcher = TwoWaySearcher::new(aob);
+
+        // Increase buffer size to 1MB
+        let buffer_size = 1024 * 1024;
+        let mut buffer = vec![0; buffer_size];
 
         loop {
-            let result = unsafe {
+            if unsafe {
                 VirtualQueryEx(
                     *handle,
                     address,
                     &mut info,
                     size_of::<MEMORY_BASIC_INFORMATION>(),
                 )
-            };
-
-            if result == 0 {
+            } == 0
+            {
                 break;
             }
 
-            if (info.State & 0x1000) != 0
-                && (info.Protect & PAGE_READWRITE == PAGE_READWRITE
-                    || info.Protect & PAGE_WRITECOPY == PAGE_WRITECOPY)
+            if (info.State & (MEM_COMMIT | MEM_IMAGE)) != 0
+                && (info.Protect
+                    & (PAGE_READONLY
+                        | PAGE_READWRITE
+                        | PAGE_WRITECOPY
+                        | PAGE_EXECUTE
+                        | PAGE_EXECUTE_READ
+                        | PAGE_EXECUTE_READWRITE
+                        | PAGE_EXECUTE_WRITECOPY))
+                    != 0
             {
-                let mut buffer = Vec::with_capacity(info.RegionSize);
-                let result = unsafe {
-                    ReadProcessMemory(
-                        *handle,
-                        info.BaseAddress,
-                        buffer.as_mut_ptr() as _,
-                        info.RegionSize,
-                        &mut bytes_read,
-                    )
-                };
-
-                if result == 1 && bytes_read > 0 {
-                    // Reading was successful and the bytes read was more than 0, continue.
-                    unsafe {
-                        buffer.set_len(bytes_read);
+                let mut offset = 0;
+                while offset < info.RegionSize {
+                    let size_to_read = std::cmp::min(buffer_size, info.RegionSize - offset);
+                    if unsafe {
+                        ReadProcessMemory(
+                            *handle,
+                            (info.BaseAddress as usize + offset) as _,
+                            buffer.as_mut_ptr() as _,
+                            size_to_read,
+                            &mut bytes_read,
+                        )
+                    } == 1
+                        && bytes_read > 0
+                    {
+                        if let Some(offset_in_buffer) = searcher.search_in(&buffer[..bytes_read]) {
+                            let address =
+                                (info.BaseAddress as usize + offset + offset_in_buffer) as *mut i64;
+                            addresses.push(address);
+                        }
                     }
-
-                    // Search for the AoB inside the buffer, from start -> bytes_read.
-                    if let Some(offset) = searcher.search_in(&buffer[..bytes_read]) {
-                        // Found, add the address.
-                        let address = (info.BaseAddress as usize + offset) as *mut i64;
-                        addresses.push(address);
-                    }
+                    offset += size_to_read;
                 }
             }
 
