@@ -1,7 +1,7 @@
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
 use memmem::{Searcher, TwoWaySearcher};
-use std::{mem::*, ptr::null_mut};
+use std::{io::Error, mem::*, ptr::null_mut};
 use winapi::um::{
     handleapi::*,
     memoryapi::*,
@@ -17,13 +17,28 @@ pub enum ModuleSearchError<'a> {
     InvalidHandleValue(&'a str),
 }
 
+/// Memory errors.
+#[derive(Debug)]
+pub enum MemoryError {
+    NullHandle(String),
+    FailedWriting(String),
+    FailedReading(String),
+}
+
 /// WinAPI Memory Manipulation.
 pub struct Memory;
 
 impl Memory {
     /// Opens the injected process for `PROCESS_ALL_ACCESS`, then returns the `HANDLE`.
-    pub fn open_current() -> HANDLE {
-        unsafe { OpenProcess(PROCESS_ALL_ACCESS, 0, GetCurrentProcessId()) }
+    pub fn open_current() -> Result<HANDLE, MemoryError> {
+        let handle = unsafe { OpenProcess(PROCESS_ALL_ACCESS, 0, GetCurrentProcessId()) };
+        if handle.is_null() {
+            Err(MemoryError::FailedWriting(
+                "The module handle is null!".to_owned(),
+            ))
+        } else {
+            Ok(handle)
+        }
     }
 
     /// Returns the injected process's id.
@@ -50,20 +65,33 @@ impl Memory {
         handle: &HANDLE,
         address: &*mut i64,
         custom_buffer_size: Option<usize>,
-    ) -> Vec<T> {
+    ) -> Result<Vec<T>, MemoryError> {
         let custom_buffer_size = custom_buffer_size.unwrap_or(size_of::<T>());
         let mut result = vec![T::default(); custom_buffer_size];
-        unsafe {
+        let mut bytes_read = 0;
+        if unsafe {
             ReadProcessMemory(
                 *handle,
                 *address as _,
                 result.as_mut_ptr() as _,
                 custom_buffer_size,
-                null_mut(),
-            );
+                &mut bytes_read,
+            )
+        } == 0
+        {
+            return Err(MemoryError::FailedReading(
+                Error::last_os_error().to_string(),
+            ));
         }
 
-        result
+        if bytes_read != custom_buffer_size {
+            return Err(MemoryError::FailedReading(format!(
+                "Tried writing {custom_buffer_size} bytes, but only got {bytes_read}. OS Error: {}",
+                Error::last_os_error()
+            )));
+        }
+
+        Ok(result)
     }
 
     /// Writes to the specified address with a custom value.
@@ -83,8 +111,9 @@ impl Memory {
         address: &*mut i64,
         data: &T,
         custom_buffer_size: Option<usize>,
-    ) {
+    ) -> Result<(), MemoryError> {
         let custom_buffer_size = custom_buffer_size.unwrap_or(size_of::<T>());
+        let mut bytes_read = 0;
 
         // Based on the type, execute special behavior to make it easier for the user to interact
         // with the memory.
@@ -101,20 +130,34 @@ impl Memory {
             data as *const _ as _
         };
 
-        unsafe {
+        if unsafe {
             WriteProcessMemory(
                 *handle,
                 *address as _,
                 buffer,
                 custom_buffer_size,
-                null_mut(),
-            );
+                &mut bytes_read,
+            )
+        } == 0
+        {
+            return Err(MemoryError::FailedReading(
+                Error::last_os_error().to_string(),
+            ));
         }
+
+        if bytes_read != custom_buffer_size {
+            return Err(MemoryError::FailedReading(format!(
+                "Tried writing {custom_buffer_size} bytes, but only got {bytes_read}. OS Error: {}",
+                Error::last_os_error()
+            )));
+        }
+
+        Ok(())
     }
 
     /// Fills the `address` with *x*-amount null-bytes (`\0`), overriding old content.
     /// The amount is specified through `length`.
-    pub fn nullify(handle: &HANDLE, address: &*mut i64, length: usize) {
+    pub fn nullify(handle: &HANDLE, address: &*mut i64, length: usize) -> Result<(), MemoryError> {
         Self::write::<[u8; 1]>(handle, address, b"\0", Some(length))
     }
 
