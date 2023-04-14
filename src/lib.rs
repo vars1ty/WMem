@@ -12,9 +12,9 @@ use winapi::um::{
 
 /// Module Search Errors.
 #[derive(Debug)]
-pub enum ModuleSearchError<'a> {
+pub enum ModuleSearchError {
     NotFound(String),
-    InvalidHandleValue(&'a str),
+    InvalidHandleValue(String),
 }
 
 /// Memory errors.
@@ -54,10 +54,11 @@ impl Memory {
     /// // If you're just reading a value like `i32` or similar, grab the first entry and continue.
     ///
     /// // Read the name of the entity with 32 characters being set as the max capacity.
-    /// let name = String::from_utf8(Memory::read::<u8>(&handle, &address, Some(32))).unwrap();
+    /// let name = String::from_utf8(Memory::read::<u8>(&handle, &address, Some(32)).expect("Failed
+    /// reading a slice of bytes")).unwrap();
     ///
     /// // Read the health of the entity.
-    /// let health = Memory::read::<i32>(&handle, &address, None)[0];
+    /// let health = Memory::read::<i32>(&handle, &address, None).expect("Failed reading i32")[0];
     /// ```
     /// Only specify a custom value for `custom_buffer_size` if you're planning on reading a slice
     /// of bytes or similar.
@@ -100,10 +101,11 @@ impl Memory {
     /// // Write "Johnny Smith" to the specified address.
     /// let new_name = "Johnny Smith".to_owned();
     /// // + 1 to get a null-byte at the end of the slice when writing it.
-    /// Memory::write::<String>(&handle, &address, &new_name, Some(new_name.len() + 1));
+    /// Memory::write::<String>(&handle, &address, &new_name, Some(new_name.len() +
+    /// 1)).expect("Failed writing string");
     ///
     /// // Write 100 to the specified address.
-    /// Memory::write::<i32>(&handle, &address, &100, None);
+    /// Memory::write::<i32>(&handle, &address, &100, None).expect("Failed writing i32");
     /// ```
     /// Only specify a custom value for `custom_buffer_size` if you're writing an array of bytes.
     pub fn write<T: Clone + Default + 'static>(
@@ -125,7 +127,13 @@ impl Memory {
             // String found, turn it into bytes and then into a Vec<u8> before returning the
             // pointer.
             let string = generic_cast::cast_ref::<T, String>(data).unwrap();
-            string.as_bytes().to_vec().as_ptr() as _
+
+            // Add a null-byte at the end if there's none.
+            if !string.ends_with('\0') {
+                format!("{string}\0").as_bytes().to_vec().as_ptr() as _
+            } else {
+                string.as_bytes().to_vec().as_ptr() as _
+            }
         } else {
             data as *const _ as _
         };
@@ -231,7 +239,7 @@ impl Memory {
     }
 
     /// Attempts to get all the modules from the currently running process.
-    pub fn get_modules() -> Result<Vec<MODULEENTRY32>, ModuleSearchError<'static>> {
+    pub fn get_modules() -> Result<Vec<MODULEENTRY32>, ModuleSearchError> {
         let snapshot = unsafe {
             CreateToolhelp32Snapshot(
                 TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32,
@@ -240,7 +248,7 @@ impl Memory {
         };
         if snapshot == INVALID_HANDLE_VALUE {
             return Err(ModuleSearchError::InvalidHandleValue(
-                "Failed retrieving a valid snapshot handle!",
+                "Failed retrieving a valid snapshot handle!".to_owned(),
             ));
         }
 
@@ -280,7 +288,7 @@ impl Memory {
         };
         if snapshot == INVALID_HANDLE_VALUE {
             return Err(ModuleSearchError::InvalidHandleValue(
-                "Failed retrieving a valid snapshot handle!",
+                "Failed retrieving a valid snapshot handle!".to_owned(),
             ));
         }
 
