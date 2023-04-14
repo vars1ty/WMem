@@ -33,7 +33,7 @@ impl Memory {
     pub fn open_current() -> Result<HANDLE, MemoryError> {
         let handle = unsafe { OpenProcess(PROCESS_ALL_ACCESS, 0, GetCurrentProcessId()) };
         if handle.is_null() {
-            Err(MemoryError::FailedWriting(
+            Err(MemoryError::NullHandle(
                 "The module handle is null!".to_owned(),
             ))
         } else {
@@ -86,7 +86,7 @@ impl Memory {
 
         if bytes_read != custom_buffer_size {
             return Err(MemoryError::FailedReading(format!(
-                "Tried writing {custom_buffer_size} bytes, but only got {bytes_read}. OS Error: {}",
+                "Tried reading {custom_buffer_size} bytes, but only got {bytes_read}. OS Error: {}",
                 Error::last_os_error()
             )));
         }
@@ -113,7 +113,7 @@ impl Memory {
         custom_buffer_size: Option<usize>,
     ) -> Result<(), MemoryError> {
         let custom_buffer_size = custom_buffer_size.unwrap_or(size_of::<T>());
-        let mut bytes_read = 0;
+        let mut bytes_written = 0;
 
         // Based on the type, execute special behavior to make it easier for the user to interact
         // with the memory.
@@ -136,7 +136,7 @@ impl Memory {
                 *address as _,
                 buffer,
                 custom_buffer_size,
-                &mut bytes_read,
+                &mut bytes_written,
             )
         } == 0
         {
@@ -145,9 +145,9 @@ impl Memory {
             ));
         }
 
-        if bytes_read != custom_buffer_size {
+        if bytes_written != custom_buffer_size {
             return Err(MemoryError::FailedReading(format!(
-                "Tried writing {custom_buffer_size} bytes, but only got {bytes_read}. OS Error: {}",
+                "Tried writing {custom_buffer_size} bytes, but only wrote {bytes_written}. OS Error: {}",
                 Error::last_os_error()
             )));
         }
