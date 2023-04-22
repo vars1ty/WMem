@@ -197,7 +197,6 @@ impl Memory {
     pub fn aob_scan(handle: &HANDLE, aob: &[u8]) -> Option<Vec<*mut i64>> {
         let mut addresses = Vec::new();
         let searcher = TwoWaySearcher::new(aob);
-        let aob_ptr = aob.as_ptr();
 
         let mut address = null_mut();
         let mut info: MEMORY_BASIC_INFORMATION = unsafe { zeroed() };
@@ -248,11 +247,6 @@ impl Memory {
                         if let Some(offset_in_buffer) = searcher.search_in(&buffer[..bytes_read]) {
                             let address =
                                 (info.BaseAddress as usize + offset + offset_in_buffer) as *mut i64;
-                            if address == aob_ptr as _ {
-                                // It's the pointer of `aob`, skip.
-                                continue;
-                            }
-
                             addresses.push(address);
                         }
                     }
