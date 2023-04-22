@@ -1,7 +1,7 @@
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
 use memmem::{Searcher, TwoWaySearcher};
-use std::{io::Error, mem::*, ptr::null_mut};
+use std::{ffi::CString, io::Error, mem::*, ptr::null_mut};
 use winapi::um::{
     handleapi::*,
     memoryapi::*,
@@ -68,7 +68,7 @@ impl Memory {
         custom_buffer_size: Option<usize>,
     ) -> Result<Vec<T>, MemoryError> {
         let custom_buffer_size = custom_buffer_size.unwrap_or(size_of::<T>());
-        let mut result = vec![T::default(); custom_buffer_size];
+        let mut result = vec![T::default(); custom_buffer_size]; // Use `with_capacity` later?
         let mut bytes_read = 0;
         if unsafe {
             ReadProcessMemory(
@@ -169,6 +169,23 @@ impl Memory {
         Self::write::<[u8; 1]>(handle, address, b"\0", Some(length))
     }
 
+    /// Nullifies all bytes starting from the `address`, ends at the `address` + `range_from_address`,
+    /// going through all addresses from start (`address`) to finish (`address + range_from_address`).
+    /// This is unsafe as it uses `CString::from_raw()` and takes ownership of the byte at the
+    /// address, then drops it.
+    pub unsafe fn nullify_internal(address: &*mut i64, range_from_address: i64) {
+        // Loop over addresses starting from `address` -> `address + range_from_address`.
+        let address = *address as i64;
+        for i in address..address + range_from_address {
+            // Get the string from the address.
+            let c_str = CString::from_raw(i as _);
+            // Take ownership of the string so we can `drop` it.
+            let string = c_str.to_string_lossy().into_owned();
+            // Drop the string to free the resources at the address.
+            drop(string)
+        }
+    }
+
     /// Searches for an AoB address in the process's memory, then return all the addresses (if
     /// any).
     /// # Example
@@ -178,53 +195,68 @@ impl Memory {
     /// println!("Found {} matches!", name.len());
     /// ```
     pub fn aob_scan(handle: &HANDLE, aob: &[u8]) -> Option<Vec<*mut i64>> {
+        let mut addresses = Vec::new();
+        let searcher = TwoWaySearcher::new(aob);
+        let aob_ptr = aob.as_ptr();
+
         let mut address = null_mut();
         let mut info: MEMORY_BASIC_INFORMATION = unsafe { zeroed() };
         let mut bytes_read = 0;
-        let mut addresses = vec![];
-        let searcher = TwoWaySearcher::new(aob);
+
+        // Increase buffer size to 1MB
+        let buffer_size = 1024 * 1024;
+        let mut buffer = vec![0; buffer_size];
 
         loop {
-            let result = unsafe {
+            if unsafe {
                 VirtualQueryEx(
                     *handle,
                     address,
                     &mut info,
                     size_of::<MEMORY_BASIC_INFORMATION>(),
                 )
-            };
-
-            if result == 0 {
+            } == 0
+            {
                 break;
             }
 
-            if (info.State & 0x1000) != 0
-                && (info.Protect & PAGE_READWRITE == PAGE_READWRITE
-                    || info.Protect & PAGE_WRITECOPY == PAGE_WRITECOPY)
+            if (info.State & (MEM_COMMIT | MEM_IMAGE)) != 0
+                && (info.Protect
+                    & (PAGE_READONLY
+                        | PAGE_READWRITE
+                        | PAGE_WRITECOPY
+                        | PAGE_EXECUTE
+                        | PAGE_EXECUTE_READ
+                        | PAGE_EXECUTE_READWRITE
+                        | PAGE_EXECUTE_WRITECOPY))
+                    != 0
             {
-                let mut buffer = Vec::with_capacity(info.RegionSize);
-                let result = unsafe {
-                    ReadProcessMemory(
-                        *handle,
-                        info.BaseAddress,
-                        buffer.as_mut_ptr() as _,
-                        info.RegionSize,
-                        &mut bytes_read,
-                    )
-                };
+                let mut offset = 0;
+                while offset < info.RegionSize {
+                    let size_to_read = std::cmp::min(buffer_size, info.RegionSize - offset);
+                    if unsafe {
+                        ReadProcessMemory(
+                            *handle,
+                            (info.BaseAddress as usize + offset) as _,
+                            buffer.as_mut_ptr() as _,
+                            size_to_read,
+                            &mut bytes_read,
+                        )
+                    } == 1
+                        && bytes_read > 0
+                    {
+                        if let Some(offset_in_buffer) = searcher.search_in(&buffer[..bytes_read]) {
+                            let address =
+                                (info.BaseAddress as usize + offset + offset_in_buffer) as *mut i64;
+                            if address == aob_ptr as _ {
+                                // It's the pointer of `aob`, skip.
+                                continue;
+                            }
 
-                if result == 1 && bytes_read > 0 {
-                    // Reading was successful and the bytes read was more than 0, continue.
-                    unsafe {
-                        buffer.set_len(bytes_read);
+                            addresses.push(address);
+                        }
                     }
-
-                    // Search for the AoB inside the buffer, from start -> bytes_read.
-                    if let Some(offset) = searcher.search_in(&buffer[..bytes_read]) {
-                        // Found, add the address.
-                        let address = (info.BaseAddress as usize + offset) as *mut i64;
-                        addresses.push(address);
-                    }
+                    offset += size_to_read;
                 }
             }
 
