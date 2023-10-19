@@ -1,48 +1,34 @@
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
-use memmem::{Searcher, TwoWaySearcher};
-use std::{ffi::CString, io::Error, mem::*, ptr::null_mut};
-use winapi::um::{
-    handleapi::*,
-    memoryapi::*,
-    processthreadsapi::{GetCurrentProcessId, OpenProcess},
-    tlhelp32::*,
-    winnt::*,
+use std::{ffi::CString, mem::*};
+use windows::{
+    core::Error,
+    Win32::{
+        Foundation::*,
+        System::{
+            Diagnostics::{Debug::*, ToolHelp::*},
+            Memory::{VirtualQuery, MEMORY_BASIC_INFORMATION, *},
+            Threading::*,
+        },
+    },
 };
-
-/// Module Search Errors.
-#[derive(Debug)]
-pub enum ModuleSearchError {
-    NotFound(String),
-    InvalidHandleValue(String),
-}
-
-/// Memory errors.
-#[derive(Debug)]
-pub enum MemoryError {
-    NullHandle(String),
-    FailedWriting(String),
-    FailedReading(String),
-}
 
 /// WinAPI Memory Manipulation.
 pub struct Memory;
 
 impl Memory {
+    /// Opens a process by its ID with `PROCESS_ALL_ACCESS`, then returns the `HANDLE`.
+    pub fn open_process_id(process_id: u32) -> Result<HANDLE, Error> {
+        unsafe { OpenProcess(PROCESS_ALL_ACCESS, false, process_id) }
+    }
+
     /// Opens the injected process for `PROCESS_ALL_ACCESS`, then returns the `HANDLE`.
-    pub fn open_current() -> Result<HANDLE, MemoryError> {
-        let handle = unsafe { OpenProcess(PROCESS_ALL_ACCESS, 0, GetCurrentProcessId()) };
-        if handle.is_null() {
-            Err(MemoryError::NullHandle(
-                "The module handle is null!".to_owned(),
-            ))
-        } else {
-            Ok(handle)
-        }
+    pub fn open_current_process() -> Result<HANDLE, Error> {
+        Self::open_process_id(Self::get_current_process_id())
     }
 
     /// Returns the injected process's id.
-    pub fn get_current_pid() -> u32 {
+    pub fn get_current_process_id() -> u32 {
         unsafe { GetCurrentProcessId() }
     }
 
@@ -64,35 +50,30 @@ impl Memory {
     /// of bytes or similar.
     pub fn read<T: Clone + Default>(
         handle: &HANDLE,
-        address: &*mut i64,
+        address: *const i64,
         custom_buffer_size: Option<usize>,
-    ) -> Result<Vec<T>, MemoryError> {
-        let custom_buffer_size = custom_buffer_size.unwrap_or(size_of::<T>());
-        let mut result = vec![T::default(); custom_buffer_size]; // Use `with_capacity` later?
-        let mut bytes_read = 0;
-        if unsafe {
+    ) -> Result<Vec<T>, Error> {
+        unsafe {
+            let custom_buffer_size = custom_buffer_size.unwrap_or(size_of::<T>());
+            let mut result = vec![T::default(); custom_buffer_size]; // Use `with_capacity` later?
+            let mut bytes_read = 0;
             ReadProcessMemory(
                 *handle,
-                *address as _,
+                address as _,
                 result.as_mut_ptr() as _,
                 custom_buffer_size,
-                &mut bytes_read,
-            )
-        } == 0
-        {
-            return Err(MemoryError::FailedReading(
-                Error::last_os_error().to_string(),
-            ));
-        }
+                Some(&mut bytes_read),
+            )?;
 
-        if bytes_read != custom_buffer_size {
-            return Err(MemoryError::FailedReading(format!(
-                "Tried reading {custom_buffer_size} bytes, but only got {bytes_read}. OS Error: {}",
-                Error::last_os_error()
-            )));
-        }
+            if bytes_read != custom_buffer_size {
+                Error::new(
+                    windows::core::HRESULT(4005),
+                    "Bytes read isn't the same length as custom_buffer_size!".into(),
+                );
+            }
 
-        Ok(result)
+            Ok(result)
+        }
     }
 
     /// Writes to the specified address with a custom value.
@@ -110,62 +91,57 @@ impl Memory {
     /// Only specify a custom value for `custom_buffer_size` if you're writing an array of bytes.
     pub fn write<T: Clone + Default + 'static>(
         handle: &HANDLE,
-        address: &*mut i64,
+        address: *const i64,
         data: &T,
         custom_buffer_size: Option<usize>,
-    ) -> Result<(), MemoryError> {
-        let custom_buffer_size = custom_buffer_size.unwrap_or(size_of::<T>());
-        let mut bytes_written = 0;
+    ) -> Result<(), Error> {
+        unsafe {
+            let custom_buffer_size = custom_buffer_size.unwrap_or(size_of::<T>());
+            let mut bytes_written = 0;
 
-        // Based on the type, execute special behavior to make it easier for the user to interact
-        // with the memory.
-        let buffer = if generic_cast::equals::<T, Vec<u8>>() {
-            // Array of Bytes found, cast to Vec<u8> and then into a pointer, otherwise writing
-            // will fail.
-            generic_cast::cast_ref::<T, Vec<u8>>(data).unwrap().as_ptr() as _
-        } else if generic_cast::equals::<T, String>() {
-            // String found, turn it into bytes and then into a Vec<u8> before returning the
-            // pointer.
-            let string = generic_cast::cast_ref::<T, String>(data).unwrap();
+            // Based on the type, execute special behavior to make it easier for the user to interact
+            // with the memory.
+            let buffer = if generic_cast::equals::<T, Vec<u8>>() {
+                // Array of Bytes found, cast to Vec<u8> and then into a pointer, otherwise writing
+                // will fail.
+                generic_cast::cast_ref::<T, Vec<u8>>(data).unwrap().as_ptr() as _
+            } else if generic_cast::equals::<T, String>() {
+                // String found, turn it into bytes and then into a Vec<u8> before returning the
+                // pointer.
+                let string = generic_cast::cast_ref::<T, String>(data).unwrap();
 
-            // Add a null-byte at the end if there's none.
-            if !string.ends_with('\0') {
-                format!("{string}\0").as_bytes().to_vec().as_ptr() as _
+                // Add a null-byte at the end if there's none.
+                if !string.ends_with('\0') {
+                    format!("{string}\0").as_bytes().to_vec().as_ptr() as _
+                } else {
+                    string.as_bytes().to_vec().as_ptr() as _
+                }
             } else {
-                string.as_bytes().to_vec().as_ptr() as _
-            }
-        } else {
-            data as *const _ as _
-        };
+                data as *const _ as _
+            };
 
-        if unsafe {
             WriteProcessMemory(
                 *handle,
-                *address as _,
+                address as _,
                 buffer,
                 custom_buffer_size,
-                &mut bytes_written,
-            )
-        } == 0
-        {
-            return Err(MemoryError::FailedReading(
-                Error::last_os_error().to_string(),
-            ));
-        }
+                Some(&mut bytes_written),
+            )?;
 
-        if bytes_written != custom_buffer_size {
-            return Err(MemoryError::FailedReading(format!(
-                "Tried writing {custom_buffer_size} bytes, but only wrote {bytes_written}. OS Error: {}",
-                Error::last_os_error()
-            )));
-        }
+            if bytes_written != custom_buffer_size {
+                Error::new(
+                    windows::core::HRESULT(4005),
+                    "Bytes read isn't the same length as custom_buffer_size!".into(),
+                );
+            }
 
-        Ok(())
+            Ok(())
+        }
     }
 
     /// Fills the `address` with *x*-amount null-bytes (`\0`), overriding old content.
     /// The amount is specified through `length`.
-    pub fn nullify(handle: &HANDLE, address: &*mut i64, length: usize) -> Result<(), MemoryError> {
+    pub fn nullify(handle: &HANDLE, address: *const i64, length: usize) -> Result<(), Error> {
         Self::write::<[u8; 1]>(handle, address, b"\0", Some(length))
     }
 
@@ -173,9 +149,9 @@ impl Memory {
     /// going through all addresses from start (`address`) to finish (`address + range_from_address`).
     /// This is unsafe as it uses `CString::from_raw()` and takes ownership of the byte at the
     /// address, then drops it.
-    pub unsafe fn nullify_internal(address: &*mut i64, range_from_address: i64) {
+    pub unsafe fn nullify_internal(address: *const i64, range_from_address: i64) {
         // Loop over addresses starting from `address` -> `address + range_from_address`.
-        let address = *address as i64;
+        let address = address as i64;
         for i in address..address + range_from_address {
             // Get the string from the address.
             let c_str = CString::from_raw(i as _);
@@ -186,6 +162,28 @@ impl Memory {
         }
     }
 
+    /// Finds a signature in the specified byte-slice.
+    fn find_signature(signature: &[u8], data: &[u8]) -> Option<usize> {
+        for i in 0..data.len() - signature.len() {
+            let mut matched = true;
+            // Enumerate to also get the index of the byte.
+            for (j, &byte) in signature.iter().enumerate() {
+                // Using the "DELETE"-byte as the wildcard one, since it's highly unlikely to be
+                // used in any non-user-defined pattern.
+                if byte != 0x7F && data[i + j] != byte {
+                    matched = false;
+                    break;
+                }
+            }
+
+            // If matched, return the offset where it was found at.
+            if matched {
+                return Some(i);
+            }
+        }
+        None
+    }
+
     /// Searches for an AoB address in the process's memory, then return all the addresses (if
     /// any).
     /// # Example
@@ -194,169 +192,148 @@ impl Memory {
     /// query!");
     /// println!("Found {} matches!", name.len());
     /// ```
-    pub fn aob_scan(handle: &HANDLE, aob: &[u8]) -> Option<Vec<*mut i64>> {
-        let mut addresses = Vec::new();
-        let searcher = TwoWaySearcher::new(aob);
+    pub fn aob_scan(signature: &[u8]) -> Result<Option<Vec<*const i64>>, Error> {
+        unsafe {
+            let handle = GetCurrentProcess();
+            let mut addresses = vec![];
 
-        let mut address = null_mut();
-        let mut info: MEMORY_BASIC_INFORMATION = unsafe { zeroed() };
-        let mut bytes_read = 0;
+            let mut address = std::ptr::null();
+            let mut info: MEMORY_BASIC_INFORMATION = MEMORY_BASIC_INFORMATION::default();
+            let mut bytes_read = 0;
 
-        // Increase buffer size to 1MB
-        let buffer_size = 1024 * 1024;
-        let mut buffer = vec![0; buffer_size];
+            const BUFFER_SIZE: usize = (1024 * 1024) / 2;
+            let mut buffer = vec![0; BUFFER_SIZE];
 
-        loop {
-            if unsafe {
-                VirtualQueryEx(
-                    *handle,
-                    address,
+            loop {
+                if VirtualQuery(
+                    Some(address as _),
                     &mut info,
                     size_of::<MEMORY_BASIC_INFORMATION>(),
-                )
-            } == 0
-            {
-                break;
-            }
+                ) == 0
+                {
+                    break;
+                }
 
-            if (info.State & (MEM_COMMIT | MEM_IMAGE)) != 0
-                && (info.Protect
-                    & (PAGE_READONLY
-                        | PAGE_READWRITE
-                        | PAGE_WRITECOPY
-                        | PAGE_EXECUTE
-                        | PAGE_EXECUTE_READ
-                        | PAGE_EXECUTE_READWRITE
-                        | PAGE_EXECUTE_WRITECOPY))
-                    != 0
-            {
-                let mut offset = 0;
-                while offset < info.RegionSize {
-                    let size_to_read = std::cmp::min(buffer_size, info.RegionSize - offset);
-                    if unsafe {
+                if info.Protect.contains(PAGE_NOACCESS | PAGE_GUARD) {
+                    continue;
+                }
+
+                // Read any memory with the state of COMMIT.
+                if info.State.contains(MEM_COMMIT) {
+                    let mut offset = 0;
+                    while offset < info.RegionSize {
+                        let size_to_read = std::cmp::min(BUFFER_SIZE, info.RegionSize - offset);
                         ReadProcessMemory(
-                            *handle,
+                            handle,
                             (info.BaseAddress as usize + offset) as _,
                             buffer.as_mut_ptr() as _,
                             size_to_read,
-                            &mut bytes_read,
-                        )
-                    } == 1
-                        && bytes_read > 0
-                    {
-                        if let Some(offset_in_buffer) = searcher.search_in(&buffer[..bytes_read]) {
-                            let address =
-                                (info.BaseAddress as usize + offset + offset_in_buffer) as *mut i64;
-                            addresses.push(address);
+                            Some(&mut bytes_read),
+                        )?;
+
+                        if bytes_read > 0 {
+                            if let Some(offset_in_buffer) =
+                                Self::find_signature(signature, &buffer[..bytes_read])
+                            {
+                                // Found, add into the buffer.
+                                let address =
+                                    (info.BaseAddress as usize + offset + offset_in_buffer) as _;
+                                addresses.push(address);
+                            }
                         }
+
+                        offset += size_to_read;
                     }
-                    offset += size_to_read;
                 }
+
+                address = (info.BaseAddress as usize + info.RegionSize) as _;
             }
 
-            address = (info.BaseAddress as usize + info.RegionSize) as _;
-        }
-
-        if addresses.is_empty() {
-            None
-        } else {
-            Some(addresses)
+            if addresses.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(addresses))
+            }
         }
     }
 
     /// Attempts to get all the modules from the currently running process.
-    pub fn get_modules() -> Result<Vec<MODULEENTRY32>, ModuleSearchError> {
-        let snapshot = unsafe {
-            CreateToolhelp32Snapshot(
+    pub fn get_modules() -> Result<Vec<MODULEENTRY32>, Error> {
+        unsafe {
+            let snapshot = CreateToolhelp32Snapshot(
                 TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32,
                 GetCurrentProcessId(),
-            )
-        };
-        if snapshot == INVALID_HANDLE_VALUE {
-            return Err(ModuleSearchError::InvalidHandleValue(
-                "Failed retrieving a valid snapshot handle!".to_owned(),
-            ));
-        }
+            )?;
 
-        let mut module_entry: MODULEENTRY32 = unsafe { zeroed() };
-        module_entry.dwSize = size_of::<MODULEENTRY32>() as u32;
-        let mut modules = vec![];
+            let mut module_entry: MODULEENTRY32 = std::mem::zeroed();
+            module_entry.dwSize = size_of::<MODULEENTRY32>() as u32;
+            let mut modules = vec![];
 
-        // If there's any modules present, begin the loop and store the module in
-        // `module_entry`.
-        if unsafe { Module32First(snapshot, &mut module_entry as _) } != 0 {
-            loop {
-                modules.push(module_entry);
+            // If there's any modules present, begin the loop and store the module in
+            // `module_entry`.
+            if Module32First(snapshot, &mut module_entry as _).is_ok() {
+                loop {
+                    modules.push(module_entry);
 
-                // Keep the loop active until there's no remaining modules, again storing the
-                // module in `module_entry`.
-                if unsafe { Module32Next(snapshot, &mut module_entry as _) } == 0 {
-                    unsafe {
-                        CloseHandle(snapshot);
+                    // Keep the loop active until there's no remaining modules, again storing the
+                    // module in `module_entry`.
+                    if Module32Next(snapshot, &mut module_entry as _).is_ok() {
+                        let _ = CloseHandle(snapshot);
+                        break;
                     }
-                    break;
                 }
             }
-        }
 
-        Ok(modules)
+            Ok(modules)
+        }
     }
 
     /// Tries to get the module by the specified name.
     /// If `exact` is true, the module name has to match what you specified.
     /// If false, it checks if the name is present in any way, then returns.
-    pub fn get_module(module_name: &str, exact: bool) -> Result<MODULEENTRY32, ModuleSearchError> {
-        let snapshot = unsafe {
-            CreateToolhelp32Snapshot(
+    pub fn get_module(module_name: &str, exact: bool) -> Result<MODULEENTRY32, Error> {
+        unsafe {
+            let snapshot = CreateToolhelp32Snapshot(
                 TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32,
                 GetCurrentProcessId(),
-            )
-        };
-        if snapshot == INVALID_HANDLE_VALUE {
-            return Err(ModuleSearchError::InvalidHandleValue(
-                "Failed retrieving a valid snapshot handle!".to_owned(),
-            ));
-        }
+            )?;
 
-        let mut module_entry: MODULEENTRY32 = unsafe { zeroed() };
-        module_entry.dwSize = size_of::<MODULEENTRY32>() as u32;
+            let mut module_entry: MODULEENTRY32 = std::mem::zeroed();
+            module_entry.dwSize = size_of::<MODULEENTRY32>() as u32;
 
-        // If there's any modules present, begin the loop and store the module in
-        // `module_entry`.
-        if unsafe { Module32First(snapshot, &mut module_entry as _) } != 0 {
-            loop {
-                let name = String::from_utf8(Self::convert_module_name(module_entry.szModule))
-                    .expect("Failed converting module name to a valid string!");
+            // If there's any modules present, begin the loop and store the module in
+            // `module_entry`.
+            if Module32First(snapshot, &mut module_entry as _).is_ok() {
+                loop {
+                    let name = String::from_utf8(Self::convert_module_name(module_entry.szModule))
+                        .expect("Failed converting module name to a valid string!");
 
-                if name == module_name && exact || name.contains(module_name) && !exact {
-                    unsafe {
-                        CloseHandle(snapshot);
+                    if name == module_name && exact || name.contains(module_name) && !exact {
+                        let _ = CloseHandle(snapshot);
+                        return Ok(module_entry);
                     }
-                    return Ok(module_entry);
-                }
 
-                unsafe {
-                    CloseHandle(snapshot);
-                }
-
-                // Keep the loop active until there's no remaining modules, again storing the
-                // module in `module_entry`.
-                if unsafe { Module32Next(snapshot, &mut module_entry as _) } == 0 {
-                    break;
+                    // Keep the loop active until there's no remaining modules, again storing the
+                    // module in `module_entry`.
+                    if Module32Next(snapshot, &mut module_entry as _).is_ok() {
+                        let _ = CloseHandle(snapshot);
+                        break;
+                    }
                 }
             }
-        }
 
-        Err(ModuleSearchError::NotFound(format!(
-            "No modules matching `{module_name}` was found."
-        )))
+            Err(Error::new(
+                windows::core::HRESULT(4005),
+                "Bytes read isn't the same length as custom_buffer_size!".into(),
+            ))
+        }
     }
 
     /// Converts all `i8` values into `u8` and returns it as a `Vec<u8>`, making it valid for
     /// String conversions.
     /// This also removes all null-bytes (`\0`) before returning the result.
-    pub fn convert_module_name(sz_module: [i8; 256]) -> Vec<u8> {
-        let mut result = sz_module.map(|entry| entry as u8).to_vec();
+    pub fn convert_module_name(sz_module: [u8; 256]) -> Vec<u8> {
+        let mut result = sz_module.to_vec();
         result.retain(|&entry| entry != 0); // Keep all bytes that aren't 0.
         result
     }

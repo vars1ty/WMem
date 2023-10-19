@@ -1,11 +1,11 @@
 [package]
 name = "wmem"
 description = "Windows Memory Manipulation library"
-authors = [ "varsity <william_hoden95@tutanota.com>" ]
+authors = [ "varsity" ]
 categories = [ "development-tools", "os::windows-apis" ]
 keywords = [ "memory", "winapi", "game-cheat", "trainer", "cheat-trainer" ]
 repository = "https://github.com/vars1ty/WMem"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 readme = "README.md"
 license = "GPL-3.0-only"
@@ -14,7 +14,7 @@ license = "GPL-3.0-only"
 path = "src/lib.rs"
 
 [dependencies]
-winapi = { version = "0.3.9", features = ["minwindef", "consoleapi", "handleapi", "processthreadsapi", "memoryapi", "tlhelp32"]}
+windows = { version = "0.51.1", features = ["Win32_Foundation", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Memory", "System", "Win32_System_Threading", "Win32_System_Diagnostics_Debug"] }
 generic-cast = "0.1.0"
 memmem = "0.1.1"
 
