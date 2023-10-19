@@ -4,9 +4,11 @@ A basic Windows Memory Manipulation library, aimed at cheat trainers.
 ## Usage Example
 ### Obtaining a handle to the injected process
 ```rust
-let handle = Memory::open_current();
+let handle = Memory::open_current_process();
 /// ...
 ```
+
+The same works for external usage, but via `open_process_id`
 
 ### Writing
 ```rust
