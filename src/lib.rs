@@ -222,15 +222,16 @@ impl Memory {
                     let mut offset = 0;
                     while offset < info.RegionSize {
                         let size_to_read = std::cmp::min(BUFFER_SIZE, info.RegionSize - offset);
-                        ReadProcessMemory(
+                        if ReadProcessMemory(
                             handle,
                             (info.BaseAddress as usize + offset) as _,
                             buffer.as_mut_ptr() as _,
                             size_to_read,
                             Some(&mut bytes_read),
-                        )?;
-
-                        if bytes_read > 0 {
+                        )
+                        .is_ok()
+                            && bytes_read > 0
+                        {
                             if let Some(offset_in_buffer) =
                                 Self::find_signature(signature, &buffer[..bytes_read])
                             {
@@ -261,7 +262,7 @@ impl Memory {
         unsafe {
             let snapshot = CreateToolhelp32Snapshot(
                 TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32,
-                GetCurrentProcessId(),
+                Self::get_current_process_id(),
             )?;
 
             let mut module_entry: MODULEENTRY32 = std::mem::zeroed();
@@ -294,7 +295,7 @@ impl Memory {
         unsafe {
             let snapshot = CreateToolhelp32Snapshot(
                 TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32,
-                GetCurrentProcessId(),
+                Self::get_current_process_id(),
             )?;
 
             let mut module_entry: MODULEENTRY32 = std::mem::zeroed();
