@@ -192,9 +192,8 @@ impl Memory {
     /// query!");
     /// println!("Found {} matches!", name.len());
     /// ```
-    pub fn aob_scan(signature: &[u8]) -> Result<Option<Vec<*const i64>>, Error> {
+    pub fn aob_scan(handle: HANDLE, signature: &[u8]) -> Result<Option<Vec<*const i64>>, Error> {
         unsafe {
-            let handle = GetCurrentProcess();
             let mut addresses = vec![];
 
             let mut address = std::ptr::null();
