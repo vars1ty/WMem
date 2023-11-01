@@ -44,11 +44,11 @@ impl Memory {
     /// // If you're just reading a value like `i32` or similar, grab the first entry and continue.
     ///
     /// // Read the name of the entity with 32 characters being set as the max capacity.
-    /// let name = String::from_utf8(Memory::read::<u8>(&handle, &address, Some(32)).expect("Failed
+    /// let name = String::from_utf8(Memory::read::<u8>(&handle, address, Some(32)).expect("Failed
     /// reading a slice of bytes")).unwrap();
     ///
     /// // Read the health of the entity.
-    /// let health = Memory::read::<i32>(&handle, &address, None).expect("Failed reading i32")[0];
+    /// let health = Memory::read::<i32>(&handle, address, None).expect("Failed reading i32")[0];
     /// ```
     /// Only specify a custom value for `custom_buffer_size` if you're planning on reading a slice
     /// of bytes or similar.
@@ -86,11 +86,11 @@ impl Memory {
     /// // Write "Johnny Smith" to the specified address.
     /// let new_name = "Johnny Smith".to_owned();
     /// // + 1 to get a null-byte at the end of the slice when writing it.
-    /// Memory::write::<String>(&handle, &address, &new_name, Some(new_name.len() +
-    /// 1)).expect("Failed writing string");
+    /// Memory::write::<String>(&handle, address, &new_name, Some(new_name.len() +
+    /// 1)).expect("Failed writing String!");
     ///
     /// // Write 100 to the specified address.
-    /// Memory::write::<i32>(&handle, &address, &100, None).expect("Failed writing i32");
+    /// Memory::write::<i32>(&handle, address, &100, None).expect("Failed writing i32");
     /// ```
     /// Only specify a custom value for `custom_buffer_size` if you're writing an array of bytes.
     pub fn write<T: Clone + Default + 'static>(
@@ -192,10 +192,9 @@ impl Memory {
     /// any).
     /// # Example
     /// ```rust
-    /// let name = Memory::aob_scan(&handle, b"John Smith").expect("Found no results matching your
+    /// let name = Memory::aob_scan(&handle, b"John Smith").expect("AoB scan failed!").expect("Found no results matching your
     /// query!");
-    /// let pattern = Memory::aob_scan(&handle, &[0x7F, 0x7F, 0x1A, 0x2A, 0x3A]).expect("Found no results matching your
-    /// pattern query!");
+    /// let pattern = Memory::aob_scan(&handle, &[0x7F, 0x7F, 0x1A, 0x2A, 0x3A]).expect("AoB scan failed!").expect("Found no results matching your pattern query!");
     /// println!("Found {} results for 'name', and {} for 'pattern'!", name.len(), pattern.len());
     /// ```
     /// # Wildcards
@@ -220,7 +219,7 @@ impl Memory {
             let mut bytes_read = 0;
 
             static BUFFER_SIZE: usize = (1024 * 1024) / 2;
-            let mut buffer = vec![0; BUFFER_SIZE];
+            let mut buffer = vec![0; BUFFER_SIZE]; // with_capacity crashes here.
 
             while VirtualQuery(
                 Some(address as _),
