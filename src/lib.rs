@@ -1,6 +1,7 @@
-#![allow(clippy::not_unsafe_ptr_arg_deref)]
-
-use std::{ffi::CString, mem::*};
+use std::{
+    ffi::{CStr, CString},
+    mem::*,
+};
 use windows::{
     core::Error,
     Win32::{
@@ -18,16 +19,19 @@ pub struct Memory;
 
 impl Memory {
     /// Opens a process by its ID with `PROCESS_ALL_ACCESS`, then returns the `HANDLE`.
+    #[inline(always)]
     pub fn open_process_id(process_id: u32) -> Result<HANDLE, Error> {
         unsafe { OpenProcess(PROCESS_ALL_ACCESS, false, process_id) }
     }
 
-    /// Opens the injected process for `PROCESS_ALL_ACCESS`, then returns the `HANDLE`.
+    /// Opens the attached process for `PROCESS_ALL_ACCESS`, then returns the `HANDLE`.
+    #[inline(always)]
     pub fn open_current_process() -> Result<HANDLE, Error> {
         Self::open_process_id(Self::get_current_process_id())
     }
 
-    /// Returns the injected process's id.
+    /// Returns the current Process's ID.
+    #[inline(always)]
     pub fn get_current_process_id() -> u32 {
         unsafe { GetCurrentProcessId() }
     }
@@ -54,7 +58,7 @@ impl Memory {
         custom_buffer_size: Option<usize>,
     ) -> Result<Vec<T>, Error> {
         unsafe {
-            let custom_buffer_size = custom_buffer_size.unwrap_or(size_of::<T>());
+            let custom_buffer_size = custom_buffer_size.unwrap_or(std::mem::size_of::<T>());
             let mut result = vec![T::default(); custom_buffer_size]; // Use `with_capacity` later?
             let mut bytes_read = 0;
             ReadProcessMemory(
@@ -96,7 +100,7 @@ impl Memory {
         custom_buffer_size: Option<usize>,
     ) -> Result<(), Error> {
         unsafe {
-            let custom_buffer_size = custom_buffer_size.unwrap_or(size_of::<T>());
+            let custom_buffer_size = custom_buffer_size.unwrap_or(std::mem::size_of::<T>());
             let mut bytes_written = 0;
 
             // Based on the type, execute special behavior to make it easier for the user to interact
@@ -112,9 +116,9 @@ impl Memory {
 
                 // Add a null-byte at the end if there's none.
                 if !string.ends_with('\0') {
-                    format!("{string}\0").as_bytes().to_vec().as_ptr() as _
+                    format!("{string}\0").as_ptr() as _
                 } else {
-                    string.as_bytes().to_vec().as_ptr() as _
+                    string.as_ptr() as _
                 }
             } else {
                 data as *const _ as _
@@ -190,35 +194,44 @@ impl Memory {
     /// ```rust
     /// let name = Memory::aob_scan(&handle, b"John Smith").expect("Found no results matching your
     /// query!");
-    /// println!("Found {} matches!", name.len());
+    /// let pattern = Memory::aob_scan(&handle, &[0x7F, 0x7F, 0x1A, 0x2A, 0x3A]).expect("Found no results matching your
+    /// pattern query!");
+    /// println!("Found {} results for 'name', and {} for 'pattern'!", name.len(), pattern.len());
     /// ```
+    /// # Wildcards
+    /// The `0x7F` byte is reserved as a wildcard-byte.
+    ///
+    /// # Returns
+    /// `Error` if unsuccessful.
+    /// `None` if successful but found no addresses.
+    /// `Some(Vec<*const i64>)` if successful and found any addresses.
     pub fn aob_scan(handle: HANDLE, signature: &[u8]) -> Result<Option<Vec<*const i64>>, Error> {
         unsafe {
-            let mut addresses = vec![];
+            if handle.is_invalid() {
+                return Err(Error::new(
+                    windows::core::HRESULT(4005),
+                    "Invalid HANDLE value!".into(),
+                ));
+            }
 
+            let mut addresses = Vec::with_capacity(8);
             let mut address = std::ptr::null();
             let mut info: MEMORY_BASIC_INFORMATION = MEMORY_BASIC_INFORMATION::default();
             let mut bytes_read = 0;
 
-            const BUFFER_SIZE: usize = (1024 * 1024) / 2;
-            let mut buffer = vec![0; BUFFER_SIZE];
+            static BUFFER_SIZE: usize = (1024 * 1024) / 2;
+            let mut buffer = Vec::with_capacity(BUFFER_SIZE);
 
-            loop {
-                if VirtualQuery(
-                    Some(address as _),
-                    &mut info,
-                    size_of::<MEMORY_BASIC_INFORMATION>(),
-                ) == 0
-                {
-                    break;
-                }
-
-                if info.Protect.contains(PAGE_NOACCESS | PAGE_GUARD) {
-                    continue;
-                }
-
+            while VirtualQuery(
+                Some(address as _),
+                &mut info,
+                std::mem::size_of::<MEMORY_BASIC_INFORMATION>(),
+            ) != 0
+            {
                 // Read any memory with the state of COMMIT.
-                if info.State.contains(MEM_COMMIT) {
+                if !info.Protect.contains(PAGE_NOACCESS | PAGE_GUARD)
+                    && info.State.contains(MEM_COMMIT)
+                {
                     let mut offset = 0;
                     while offset < info.RegionSize {
                         let size_to_read = std::cmp::min(BUFFER_SIZE, info.RegionSize - offset);
@@ -266,7 +279,7 @@ impl Memory {
             )?;
 
             let mut module_entry: MODULEENTRY32 = std::mem::zeroed();
-            module_entry.dwSize = size_of::<MODULEENTRY32>() as u32;
+            module_entry.dwSize = std::mem::size_of::<MODULEENTRY32>() as u32;
             let mut modules = vec![];
 
             // If there's any modules present, begin the loop and store the module in
@@ -299,7 +312,7 @@ impl Memory {
             )?;
 
             let mut module_entry: MODULEENTRY32 = std::mem::zeroed();
-            module_entry.dwSize = size_of::<MODULEENTRY32>() as u32;
+            module_entry.dwSize = std::mem::size_of::<MODULEENTRY32>() as u32;
 
             // If there's any modules present, begin the loop and store the module in
             // `module_entry`.
@@ -336,5 +349,15 @@ impl Memory {
         let mut result = sz_module.to_vec();
         result.retain(|&entry| entry != 0); // Keep all bytes that aren't 0.
         result
+    }
+
+    /// Converts a `*const u8` pointer (C-String) to a `&'static str` if successful.
+    pub fn ptr_to_string(handle: &HANDLE, ptr: *const u8) -> Option<&'static str> {
+        // Safety: Read 1 byte using normal read function to see if it's valid, initialized memory.
+        if Self::read::<u8>(handle, ptr as _, Some(1)).is_err() || ptr.is_null() {
+            return None;
+        }
+
+        unsafe { CStr::from_ptr(ptr as _).to_str() }.ok()
     }
 }
