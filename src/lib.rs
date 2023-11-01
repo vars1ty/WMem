@@ -220,7 +220,7 @@ impl Memory {
             let mut bytes_read = 0;
 
             static BUFFER_SIZE: usize = (1024 * 1024) / 2;
-            let mut buffer = Vec::with_capacity(BUFFER_SIZE);
+            let mut buffer = vec![0; BUFFER_SIZE];
 
             while VirtualQuery(
                 Some(address as _),
