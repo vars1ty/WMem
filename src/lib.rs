@@ -1,14 +1,13 @@
-use std::{
-    ffi::{CStr, CString},
-    mem::*,
-};
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
+use std::ffi::{CStr, CString};
 use windows::{
-    core::Error,
+    core::{Error, PCSTR},
     Win32::{
         Foundation::*,
         System::{
             Diagnostics::{Debug::*, ToolHelp::*},
-            Memory::{VirtualQuery, MEMORY_BASIC_INFORMATION, *},
+            LibraryLoader::*,
+            Memory::*,
             Threading::*,
         },
     },
@@ -100,7 +99,8 @@ impl Memory {
         custom_buffer_size: Option<usize>,
     ) -> Result<(), Error> {
         unsafe {
-            let custom_buffer_size = custom_buffer_size.unwrap_or(std::mem::size_of::<T>());
+            let mut real_custom_buffer_size =
+                custom_buffer_size.unwrap_or(std::mem::size_of::<T>());
             let mut bytes_written = 0;
 
             // Based on the type, execute special behavior to make it easier for the user to interact
@@ -114,12 +114,27 @@ impl Memory {
                 // pointer.
                 let string = generic_cast::cast_ref::<T, String>(data).unwrap();
 
-                // Add a null-byte at the end if there's none.
-                if !string.ends_with('\0') {
-                    format!("{string}\0").as_ptr() as _
-                } else {
-                    string.as_ptr() as _
+                // Automatically assign real_custom_buffer_size if the user-specified one is unset.
+                if custom_buffer_size.is_none() {
+                    real_custom_buffer_size = string.len() + 1;
                 }
+
+                let cstring = CString::new(&**string)
+                    .expect("Failed converting `String` input into CString!");
+                cstring.as_ptr() as _
+            } else if generic_cast::equals::<T, &str>() {
+                // String found, turn it into bytes and then into a Vec<u8> before returning the
+                // pointer.
+                let string = generic_cast::cast_ref::<T, &str>(data).unwrap();
+
+                // Automatically assign real_custom_buffer_size if the user-specified one is unset.
+                if custom_buffer_size.is_none() {
+                    real_custom_buffer_size = string.len() + 1;
+                }
+
+                let cstring =
+                    CString::new(&**string).expect("Failed converting `&str` input into CString!");
+                cstring.as_ptr() as _
             } else {
                 data as *const _ as _
             };
@@ -128,14 +143,14 @@ impl Memory {
                 *handle,
                 address as _,
                 buffer,
-                custom_buffer_size,
+                real_custom_buffer_size,
                 Some(&mut bytes_written),
             )?;
 
-            if bytes_written != custom_buffer_size {
+            if bytes_written != real_custom_buffer_size {
                 Error::new(
                     windows::core::HRESULT(4005),
-                    "Bytes read isn't the same length as custom_buffer_size!".into(),
+                    "Bytes written isn't the same length as custom_buffer_size!".into(),
                 );
             }
 
@@ -149,62 +164,60 @@ impl Memory {
         Self::write::<[u8; 1]>(handle, address, b"\0", Some(length))
     }
 
-    /// Nullifies all bytes starting from the `address`, ends at the `address` + `range_from_address`,
-    /// going through all addresses from start (`address`) to finish (`address + range_from_address`).
-    /// This is unsafe as it uses `CString::from_raw()` and takes ownership of the byte at the
-    /// address, then drops it.
-    pub unsafe fn nullify_internal(address: *const i64, range_from_address: i64) {
-        // Loop over addresses starting from `address` -> `address + range_from_address`.
-        let address = address as i64;
-        for i in address..address + range_from_address {
-            // Get the string from the address.
-            let c_str = CString::from_raw(i as _);
-            // Take ownership of the string so we can `drop` it.
-            let string = c_str.to_string_lossy().into_owned();
-            // Drop the string to free the resources at the address.
-            drop(string)
-        }
-    }
+    /// Partially Parallel signature scanner, use `0x7F` as the wildcard byte.
+    /// Returns the offset where the signature/pattern was found.
+    fn find_in_signature(signature: &[u8], data: &[u8]) -> Option<Vec<usize>> {
+        // Only use Rayon with the first loop, as the second one may otherwise give incorrect
+        // results, or have high overhead.
+        let results: Vec<usize> = (0..data.len() - signature.len())
+            .into_par_iter()
+            .filter_map(|i| {
+                let mut matched = true;
 
-    /// Finds a signature in the specified byte-slice.
-    fn find_signature(signature: &[u8], data: &[u8]) -> Option<usize> {
-        for i in 0..data.len() - signature.len() {
-            let mut matched = true;
-            // Enumerate to also get the index of the byte.
-            for (j, &byte) in signature.iter().enumerate() {
                 // Using the "DELETE"-byte as the wildcard one, since it's highly unlikely to be
                 // used in any non-user-defined pattern.
-                if byte != 0x7F && data[i + j] != byte {
-                    matched = false;
-                    break;
+                for (j, &byte) in signature.iter().enumerate() {
+                    if byte != 0x7F && data[i + j] != byte {
+                        matched = false;
+                        continue;
+                    }
                 }
-            }
 
-            // If matched, return the offset where it was found at.
-            if matched {
-                return Some(i);
-            }
+                if matched {
+                    Some(i)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        if results.is_empty() {
+            None
+        } else {
+            Some(results)
         }
-        None
     }
 
     /// Searches for an AoB address in the process's memory, then return all the addresses (if
     /// any).
     /// # Example
     /// ```rust
-    /// let name = Memory::aob_scan(&handle, b"John Smith").expect("AoB scan failed!").expect("Found no results matching your
-    /// query!");
-    /// let pattern = Memory::aob_scan(&handle, &[0x7F, 0x7F, 0x1A, 0x2A, 0x3A]).expect("AoB scan failed!").expect("Found no results matching your pattern query!");
+    /// let handle = ...;
+    /// let name = Memory::aob_scan(&handle, b"John Smith").expect("AoB scan failed!");
+    /// let pattern = Memory::aob_scan(&handle, &[0x7F, 0x7F, 0x1A, 0x2A, 0x3A]).expect("AoB scan failed!");
     /// println!("Found {} results for 'name', and {} for 'pattern'!", name.len(), pattern.len());
     /// ```
     /// # Wildcards
     /// The `0x7F` byte is reserved as a wildcard-byte.
     ///
     /// # Returns
-    /// `Error` if unsuccessful.
-    /// `None` if successful but found no addresses.
-    /// `Some(Vec<*const i64>)` if successful and found any addresses.
-    pub fn aob_scan(handle: HANDLE, signature: &[u8]) -> Result<Option<Vec<*const i64>>, Error> {
+    /// `Error` if there was an error, or if there were no results.
+    /// `Vec<*const i64>` if successful and found any addresses.
+    pub fn aob_scan(
+        handle: HANDLE,
+        signature: &[u8],
+        include_exeutable: bool,
+    ) -> Result<Vec<*const i64>, Error> {
         unsafe {
             if handle.is_invalid() {
                 return Err(Error::new(
@@ -213,13 +226,12 @@ impl Memory {
                 ));
             }
 
+            let sig_ptr = signature.as_ptr();
+            static BUFFER_SIZE: usize = (1024 * 1024) / 2;
             let mut addresses = Vec::with_capacity(8);
             let mut address = std::ptr::null();
-            let mut info: MEMORY_BASIC_INFORMATION = MEMORY_BASIC_INFORMATION::default();
+            let mut info = MEMORY_BASIC_INFORMATION::default();
             let mut bytes_read = 0;
-
-            static BUFFER_SIZE: usize = (1024 * 1024) / 2;
-            let mut buffer = vec![0; BUFFER_SIZE]; // with_capacity crashes here.
 
             while VirtualQuery(
                 Some(address as _),
@@ -231,12 +243,20 @@ impl Memory {
                 if !info.Protect.contains(PAGE_NOACCESS | PAGE_GUARD)
                     && info.State.contains(MEM_COMMIT)
                 {
+                    if !include_exeutable && info.Protect.contains(PAGE_EXECUTE) {
+                        continue;
+                    }
+
                     let mut offset = 0;
+                    let mut buffer = vec![0; BUFFER_SIZE]; // with_capacity crashes here.
+
                     while offset < info.RegionSize {
                         let size_to_read = std::cmp::min(BUFFER_SIZE, info.RegionSize - offset);
+                        let base_address_w_offset = info.BaseAddress as usize + offset;
+
                         if ReadProcessMemory(
                             handle,
-                            (info.BaseAddress as usize + offset) as _,
+                            base_address_w_offset as _,
                             buffer.as_mut_ptr() as _,
                             size_to_read,
                             Some(&mut bytes_read),
@@ -245,12 +265,16 @@ impl Memory {
                             && bytes_read > 0
                         {
                             if let Some(offset_in_buffer) =
-                                Self::find_signature(signature, &buffer[..bytes_read])
+                                Self::find_in_signature(signature, &buffer[..bytes_read])
                             {
-                                // Found, add into the buffer.
-                                let address =
-                                    (info.BaseAddress as usize + offset + offset_in_buffer) as _;
-                                addresses.push(address);
+                                for offset_in_buffer in offset_in_buffer {
+                                    // Found, add into the buffer.
+                                    let address =
+                                        (base_address_w_offset + offset_in_buffer) as *const i64;
+                                    if !addresses.contains(&address) {
+                                        addresses.push(address);
+                                    }
+                                }
                             }
                         }
 
@@ -261,10 +285,14 @@ impl Memory {
                 address = (info.BaseAddress as usize + info.RegionSize) as _;
             }
 
+            addresses.retain(|address| *address != sig_ptr as _);
             if addresses.is_empty() {
-                Ok(None)
+                Err(Error::new(
+                    windows::core::HRESULT(4005),
+                    "No results were found!".into(),
+                ))
             } else {
-                Ok(Some(addresses))
+                Ok(addresses)
             }
         }
     }
@@ -277,8 +305,10 @@ impl Memory {
                 Self::get_current_process_id(),
             )?;
 
-            let mut module_entry: MODULEENTRY32 = std::mem::zeroed();
-            module_entry.dwSize = std::mem::size_of::<MODULEENTRY32>() as u32;
+            let mut module_entry = MODULEENTRY32 {
+                dwSize: std::mem::size_of::<MODULEENTRY32>() as u32,
+                ..Default::default()
+            };
             let mut modules = vec![];
 
             // If there's any modules present, begin the loop and store the module in
@@ -293,6 +323,8 @@ impl Memory {
                         let _ = CloseHandle(snapshot);
                         break;
                     }
+
+                    let _ = CloseHandle(snapshot);
                 }
             }
 
@@ -310,8 +342,10 @@ impl Memory {
                 Self::get_current_process_id(),
             )?;
 
-            let mut module_entry: MODULEENTRY32 = std::mem::zeroed();
-            module_entry.dwSize = std::mem::size_of::<MODULEENTRY32>() as u32;
+            let mut module_entry = MODULEENTRY32 {
+                dwSize: std::mem::size_of::<MODULEENTRY32>() as u32,
+                ..Default::default()
+            };
 
             // If there's any modules present, begin the loop and store the module in
             // `module_entry`.
@@ -331,28 +365,59 @@ impl Memory {
                         let _ = CloseHandle(snapshot);
                         break;
                     }
+
+                    let _ = CloseHandle(snapshot);
                 }
             }
 
             Err(Error::new(
                 windows::core::HRESULT(4005),
-                "Bytes read isn't the same length as custom_buffer_size!".into(),
+                "Failed finding the desired module!".into(),
             ))
         }
     }
 
-    /// Converts all `i8` values into `u8` and returns it as a `Vec<u8>`, making it valid for
-    /// String conversions.
-    /// This also removes all null-bytes (`\0`) before returning the result.
+    /// Gets the address to a function inside of a module.
+    /// ## Example
+    /// ```rust
+    /// let result = Memory::get_module_symbol_address(c"opengl32.dll",
+    /// c"wglSwapBuffers").expect("Failed finding wglSwapBuffers!");
+    /// ```
+    pub fn get_module_symbol_address(module: &CStr, symbol: &CStr) -> Option<usize> {
+        unsafe {
+            GetModuleHandleA(PCSTR(module.as_ptr() as _))
+                .ok()
+                .and_then(|handle| GetProcAddress(handle, PCSTR(symbol.as_ptr() as _)))
+                .map(|result| result as usize)
+        }
+    }
+
+    /// Reads the data from `sz_module` up until the first null-byte.
     pub fn convert_module_name(sz_module: [u8; 256]) -> Vec<u8> {
         let mut result = sz_module.to_vec();
-        result.retain(|&entry| entry != 0); // Keep all bytes that aren't 0.
+        // Read up until a null-byte.
+        if let Some(position) = result.iter().position(|&byte| byte == 0) {
+            result.truncate(position);
+        }
+
         result
     }
 
-    /// Converts a `*const u8` pointer (C-String) to a `&'static str` if successful.
+    /// Converts a `*const u8` C-String pointer to a `&'static str` if successful.
+    /// ## Known Issues
+    /// This implementation is **not** bullet-proof, it *can* crash for unexpected reasons.
+    /// This implementation also isn't exceptionally fast if used in hot-paths, since it calls the
+    /// `Memory::read` function to read 1 byte at `ptr` to ensure that the memory is initialized
+    /// and doesn't return an error. This is by no means perfect, but does increase safety by a
+    /// bit, after that it calls `CStr::from_ptr`.
+    /// ## Example
+    /// ```rust
+    /// let handle = ...;
+    /// let cstr_literal = c"Hello World!";
+    /// let result = Memory::ptr_to_string(&handle, cstr_literal.as_ptr() as *const u8).expect("Failed reading
+    /// C-String!");
+    /// ```
     pub fn ptr_to_string(handle: &HANDLE, ptr: *const u8) -> Option<&'static str> {
-        // Safety: Read 1 byte using normal read function to see if it's valid, initialized memory.
         if Self::read::<u8>(handle, ptr as _, Some(1)).is_err() || ptr.is_null() {
             return None;
         }
